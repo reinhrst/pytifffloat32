@@ -11,13 +11,17 @@ import math
 _MYDIR = os.path.dirname(os.path.realpath(__file__))
 log = logging.getLogger()
 
+VT_BYTE = 1
+VT_ASCII = 2
+VT_SHORT = 3
+VT_LONG = 4      # TIFF LONGS ar 32 bits
+VT_RATIONAL = 5  # RATIONAL is fraction: first int32 / second int32
 VALUETYPE = {
-    1: ["c",  1, lambda x: "".join(x)],  # BYTE
-    2: ["c",  1, lambda x: "".join(x[:-1]).split("\x00")],  # ASCII
-    3: ["H",  2, lambda x: list(x)],  # SHORT
-    4: ["I",  4, lambda x: list(x)],  # LONG (actually int32)
-    # RATIONAL: (two int32s, first num, second denom)
-    5: ["ii", 8, lambda x: zip(x[::2], x[1::2])],
+    VT_BYTE:     ["c",  1, lambda x: "".join(x)],
+    VT_ASCII:    ["c",  1, lambda x: "".join(x[:-1]).split("\x00")],
+    VT_SHORT:    ["H",  2, lambda x: list(x)],
+    VT_LONG:     ["I",  4, lambda x: list(x)],
+    VT_RATIONAL: ["ii", 8, lambda x: zip(x[::2], x[1::2])],
 }
 
 
@@ -29,31 +33,37 @@ def _single_param(v):
 def _id(v):
     return v
 
+DIRECTORY_ENTRY_LENGTH = 12
+TIFF_HEADER = '\x49\x49\x2a\x00'
+
+COMPRESSION_NONE = 1
+COMPRESSION_LZW = 5
+PREDICTOR_NONE = 1
+PREDICTOR_FLOAT = 3
+EXTRASAMPLES_ALPHA = 1
+PHOTOMETRIC_RGB = 2
+SAMPLEFORMAT_FLOAT = 3
 FIELD = [
-    #  name                        id       transform    acceptable values
-    ("width",                     0x100, _single_param),
-    ("height",                    0x101, _single_param),
-    ("bitspersample",             0x102, _id,           [[32, 32, 32, 32]]),
-    # compression == 5: lzw
-    ("compression",               0x103, _single_param, [5]),
-    # photometricinterpretation == 2: RGB data
-    ("photometricinterpreration", 0x106, _single_param, [2]),
-    ("stripoffsets",              0x111, _id),
-    ("orientation",               0x112, _single_param, [1]),
-    ("samplesperpixel",           0x115, _single_param, [4]),
-    ("rowsperstrip",              0x116, _single_param),
-    ("stripbytecounts",           0x117, _id),
-    ("planarconfig",              0x11C, _single_param, [1]),
-    ("xposition",                 0x11E, _single_param, [(0, 1)]),
-    ("yposition",                 0x11F, _single_param, [(0, 1)]),
-    ("datetime",                  0x132, _single_param),
-    # predictor == 3: float predictor: http://chriscox.org/TIFFTN3d1.pdf
-    ("predictor",                 0x13D, _single_param, [3]),
-    # extrasamples == 1: fourth channel = alpha
-    ("extrasamples",              0x152, _single_param, [1]),
-    # sampleformat 3 means float
-    ("sampleformat",              0x153, _id, [[3, 3, 3, 3]]),
-    ("xml",                       0x2bc, _id),
+    #  name              id       transform    acceptable values
+    ("width",           0x100, _single_param),
+    ("height",          0x101, _single_param),
+    ("bitspersample",   0x102, _id,           [[32, 32, 32, 32]]),
+    ("compression",     0x103, _single_param, [COMPRESSION_LZW]),
+    ("photometric",     0x106, _single_param, [PHOTOMETRIC_RGB]),
+    ("stripoffsets",    0x111, _id),
+    ("orientation",     0x112, _single_param, [1]),
+    ("samplesperpixel", 0x115, _single_param, [4]),
+    ("rowsperstrip",    0x116, _single_param),
+    ("stripbytecounts", 0x117, _id),
+    ("planarconfig",    0x11C, _single_param, [1]),
+    ("xposition",       0x11E, _single_param, [(0, 1)]),
+    ("yposition",       0x11F, _single_param, [(0, 1)]),
+    ("datetime",        0x132, _single_param),
+    # predictor: http://chriscox.org/TIFFTN3d1.pdf
+    ("predictor",       0x13D, _single_param, [PREDICTOR_FLOAT]),
+    ("extrasamples",    0x152, _single_param, [EXTRASAMPLES_ALPHA]),
+    ("sampleformat",    0x153, _id, [4 * [SAMPLEFORMAT_FLOAT]]),
+    ("xml",             0x2bc, _id),
 ]
 
 __FIELD_BY_ID_MAP = {values[1]: values for values in FIELD}
@@ -67,15 +77,22 @@ def read_uint32(f):
     return struct.unpack("<I", f.read(4))[0]
 
 
+def write_uint32(f, i):
+    f.write(struct.pack("<I", i))
+
+
 def read_uint16(f):
     return struct.unpack("<H", f.read(2))[0]
 
 
+def write_uint16(f, i):
+    f.write(struct.pack("<H", i))
+
+
 def read_tiff(filename):
-    DIRECTORY_ENTRY_LENGTH = 12
     with open(filename) as tifffile:
         header = tifffile.read(4)
-        assert header == '\x49\x49\x2a\x00', "TIFF header not found"
+        assert header == TIFF_HEADER, "TIFF header not found"
         directorystart = read_uint32(tifffile)
         log.debug("directory start at 0x%x", directorystart)
         tifffile.seek(directorystart)
@@ -147,14 +164,118 @@ def read_tiff(filename):
                 # of the individual floats
                 transpose(0, 2, 1).flatten().tostring())
             imageasstring += strip
-        flatimage = numpy.fromstring(imageasstring, dtype=numpy.float32)
-        return flatimage.reshape((directory["height"], directory["width"],
-                                  directory["samplesperpixel"]))
+    flatimage = numpy.fromstring(imageasstring, dtype=numpy.float32)
+    return flatimage.reshape((directory["height"], directory["width"],
+                              directory["samplesperpixel"]))
+
+
+def write_tiff(filename, data):
+    """
+    expects data to be a 3-dimensional numpy array (height, width, channels)
+    of type numpy.float32
+    """
+    assert len(data.shape) == 3
+    height, width, nrchannels = data.shape
+    assert nrchannels == 4
+    ROWSPERSTRIP = 32
+    FIRSTSTRIP = 793
+    stripoffsets = []
+    stripbytecounts = []
+    directory = {
+        "width": (width, VT_SHORT),
+        "height": (height, VT_SHORT),
+        "bitspersample": ([32, 32, 32, 32], VT_SHORT),
+        "compression": (COMPRESSION_NONE, VT_SHORT),
+        "photometric": (PHOTOMETRIC_RGB, VT_SHORT),
+        "stripoffsets": (stripoffsets, VT_LONG),
+        "orientation": (1, VT_SHORT),
+        "samplesperpixel": (4, VT_SHORT),
+        "rowsperstrip": (ROWSPERSTRIP, VT_SHORT),
+        "stripbytecounts": (stripbytecounts, VT_LONG),
+        "planarconfig": (1, VT_SHORT),
+        "xposition": ((0, 1), VT_RATIONAL),
+        "yposition": ((0, 1), VT_RATIONAL),
+        "datetime": ("some time long ago", VT_ASCII),
+        "predictor": (PREDICTOR_NONE, VT_SHORT),
+        "extrasamples": (EXTRASAMPLES_ALPHA, VT_SHORT),
+        "sampleformat": (SAMPLEFORMAT_FLOAT, VT_SHORT),
+        "xml": ("dontcare", VT_BYTE)
+    }
+    nrstrips = int(math.ceil(float(height) / ROWSPERSTRIP))
+    stripstart = FIRSTSTRIP
+    stripdata = []
+    for stripnr in range(nrstrips):
+        stripstring = data[stripnr * ROWSPERSTRIP:][:ROWSPERSTRIP].tostring()
+        stripoffsets.append(stripstart)
+        stripbytecounts.append(len(stripstring))
+        stripstart += len(stripstring)
+        stripdata.append(stripstring)
+
+    log.debug("Found strips of sizes: %s", repr(stripbytecounts))
+
+    with open(filename, "w+b") as f:
+        f.write(TIFF_HEADER)
+        directorystart = stripstart
+        write_uint32(f, directorystart)
+        # pad.... Not sure if we need the padding at all or can just have the
+        # first strip start at position 8....
+        while f.tell() < FIRSTSTRIP:
+            f.write('\x00')
+        for stripstring in stripdata:
+            f.write(stripstring)
+        write_uint16(f, len(directory))
+        extradatastart = (directorystart + 2 +
+                          DIRECTORY_ENTRY_LENGTH * len(directory))
+        extradata = ""
+
+        assert len(directory) == len(FIELD)
+        for info in FIELD:
+            tagname, tag = info[:2]
+            assert tagname in directory
+
+            value = directory[tagname][0]
+            vt_type = directory[tagname][1]
+            write_uint16(f, tag)
+            write_uint16(f, vt_type)
+
+            if isinstance(value, list):
+                values = value
+            else:
+                values = [value]
+
+            if vt_type == VT_BYTE:
+                towrite = value
+            elif vt_type == VT_ASCII:
+                towrite = "\x00".join(values) + "\x00"
+            elif vt_type in [VT_SHORT, VT_LONG]:
+                packformat = "<" + len(values) * VALUETYPE[vt_type][0]
+                towrite = struct.pack(packformat, *values)
+            else:
+                assert vt_type == VT_RATIONAL
+                packformat = "<" + len(values) * VALUETYPE[vt_type][0]
+                topack = sum(values, ())
+                towrite = struct.pack(packformat, *topack)
+
+            length = len(towrite) / VALUETYPE[vt_type][1]
+            write_uint32(f, length)
+
+            if len(towrite) > 4:
+                pointer = extradatastart + len(extradata)
+                write_uint32(f, pointer)
+                extradata += towrite
+            else:
+                f.write((towrite + 4 * '\x00')[:4])
+        assert f.tell() == extradatastart
+        if extradata:
+            f.write(extradata)
 
 
 if __name__ == "__main__":
     import shared
     logging.basicConfig()
     log.setLevel(logging.DEBUG)
-    image = read_tiff(os.path.join(_MYDIR, "tifftest.tif"))
-    shared.save_image("/tmp/test.tif", image.shape[1], image.shape[0], image)
+    (width, height, image) = shared.read_image(os.path.join(_MYDIR,
+                                                            "tifftest.tif"))
+    write_tiff("/tmp/test.tif", image.reshape(height, width, 4))
+    # image = read_tiff(os.path.join(_MYDIR, "tifftest.tif"))
+    # shared.save_image("/tmp/test.tif", image.shape[1], image.shape[0], image)
