@@ -35,6 +35,7 @@ def _id(v):
 
 DIRECTORY_ENTRY_LENGTH = 12
 TIFF_HEADER = '\x49\x49\x2a\x00'
+END_OF_DIRECTORY_PADDING = '\x00\x00\x00\x00'
 
 COMPRESSION_NONE = 1
 COMPRESSION_LZW = 5
@@ -178,25 +179,26 @@ def write_tiff(filename, data):
     height, width, nrchannels = data.shape
     assert nrchannels == 4
     ROWSPERSTRIP = 32
-    FIRSTSTRIP = 793
+    FIRSTSTRIP = 8
+    BITSPERSAMPLE = 32
     stripoffsets = []
     stripbytecounts = []
     directory = {
         "width": (width, VT_SHORT),
         "height": (height, VT_SHORT),
-        "bitspersample": ([32, 32, 32, 32], VT_SHORT),
-        "compression": (COMPRESSION_NONE, VT_SHORT),
+        "bitspersample": (nrchannels * [BITSPERSAMPLE], VT_SHORT),
+        "compression": (COMPRESSION_LZW, VT_SHORT),
         "photometric": (PHOTOMETRIC_RGB, VT_SHORT),
         "stripoffsets": (stripoffsets, VT_LONG),
         "orientation": (1, VT_SHORT),
-        "samplesperpixel": (4, VT_SHORT),
+        "samplesperpixel": (nrchannels, VT_SHORT),
         "rowsperstrip": (ROWSPERSTRIP, VT_SHORT),
         "stripbytecounts": (stripbytecounts, VT_LONG),
         "planarconfig": (1, VT_SHORT),
         "xposition": ((0, 1), VT_RATIONAL),
         "yposition": ((0, 1), VT_RATIONAL),
         "datetime": ("some time long ago", VT_ASCII),
-        "predictor": (PREDICTOR_NONE, VT_SHORT),
+        "predictor": (PREDICTOR_FLOAT, VT_SHORT),
         "extrasamples": (EXTRASAMPLES_ALPHA, VT_SHORT),
         "sampleformat": (SAMPLEFORMAT_FLOAT, VT_SHORT),
         "xml": ("dontcare", VT_BYTE)
@@ -205,11 +207,29 @@ def write_tiff(filename, data):
     stripstart = FIRSTSTRIP
     stripdata = []
     for stripnr in range(nrstrips):
+        nrrows = min(height - ROWSPERSTRIP * stripnr, ROWSPERSTRIP)
+        bytespersample = BITSPERSAMPLE / 8
+
         stripstring = data[stripnr * ROWSPERSTRIP:][:ROWSPERSTRIP].tostring()
+        stripbytes = numpy.fromstring(stripstring, dtype=numpy.uint8)
+        # reverse the thing we do in reading
+        cumsummedstrip = (stripbytes.reshape(
+            (nrrows, width * nrchannels, bytespersample))[:, :, ::-1].
+            transpose(0, 2, 1))
+        reshapedcumsummedstrip = cumsummedstrip.reshape(
+            (nrrows, width * bytespersample, nrchannels))
+        # now the second step is slightly more complex than in the read-case
+        diffstrip = numpy.diff(reshapedcumsummedstrip, axis=1)
+        # because the diffstrip only contains diffs, not the starting value
+        # so we have to re-attach the staring column
+        predictedstrip = numpy.concatenate((reshapedcumsummedstrip[:, 0:1, :],
+                                            diffstrip), axis=1).tostring()
+
+        compressedstrip = lzw.compress(predictedstrip)
         stripoffsets.append(stripstart)
-        stripbytecounts.append(len(stripstring))
-        stripstart += len(stripstring)
-        stripdata.append(stripstring)
+        stripbytecounts.append(len(compressedstrip))
+        stripstart += len(compressedstrip)
+        stripdata.append(compressedstrip)
 
     log.debug("Found strips of sizes: %s", repr(stripbytecounts))
 
@@ -223,9 +243,11 @@ def write_tiff(filename, data):
             f.write('\x00')
         for stripstring in stripdata:
             f.write(stripstring)
+        assert f.tell() == directorystart
         write_uint16(f, len(directory))
         extradatastart = (directorystart + 2 +
-                          DIRECTORY_ENTRY_LENGTH * len(directory))
+                          DIRECTORY_ENTRY_LENGTH * len(directory) +
+                          len(END_OF_DIRECTORY_PADDING))
         extradata = ""
 
         assert len(directory) == len(FIELD)
@@ -265,6 +287,7 @@ def write_tiff(filename, data):
                 extradata += towrite
             else:
                 f.write((towrite + 4 * '\x00')[:4])
+        f.write(END_OF_DIRECTORY_PADDING)
         assert f.tell() == extradatastart
         if extradata:
             f.write(extradata)
@@ -273,7 +296,7 @@ def write_tiff(filename, data):
 if __name__ == "__main__":
     import shared
     logging.basicConfig()
-    log.setLevel(logging.DEBUG)
+    log.setLevel(logging.INFO)
     (width, height, image) = shared.read_image(os.path.join(_MYDIR,
                                                             "tifftest.tif"))
     write_tiff("/tmp/test.tif", image.reshape(height, width, 4))
