@@ -76,49 +76,64 @@ def compress(bytelist):
     decompress(compress(x)) == x
     (although not necessarily the other way around)
     """
-    lookup = {chr(i): i for i in range(0x100)}
-    lookup[CLEAR_CODE] = CLEAR_CODE
-    lookup[END_OF_INFO_CODE] = END_OF_INFO_CODE
+    lookup = {chr(i): {'value': i} for i in range(0x100)}
+    lookuplength = 0x102  # all chars + clearcode + endcode
+    currentlookup = lookup
 
-    cleanlookup = lookup.copy()
-
-    currentstring = ""
     bitwidth = START_BIT_WIDTH
+    lookupmaxlength = 1 << bitwidth
     codes = [(CLEAR_CODE, bitwidth)]
     for c in bytelist:
-        newstring = currentstring + c
-        if newstring in lookup:
-            currentstring = newstring
+        if c in currentlookup:
+            currentlookup = currentlookup[c]
             continue
-        assert currentstring in lookup
-        codes.append((lookup[currentstring], bitwidth))
-        log.debug("appending %s", repr((lookup[currentstring], bitwidth)))
-        lookup[newstring] = len(lookup)
-        if len(lookup) == (1 << bitwidth):
+        # add new code to codes
+        codes.append((currentlookup['value'], bitwidth))
+        # add new entry in lookup table
+        currentlookup[c] = {'value': lookuplength}
+        lookuplength += 1
+
+        if lookuplength == lookupmaxlength:
             if bitwidth < MAX_BIT_WIDTH:
                 bitwidth += 1
+                lookupmaxlength = 1 << bitwidth
                 log.debug("Going to bitwidth %d", bitwidth)
             else:
                 codes.append((CLEAR_CODE, bitwidth))
                 bitwidth = START_BIT_WIDTH
+                lookupmaxlength = 1 << bitwidth
                 log.debug("Reset bitwidth to %d", bitwidth)
-                lookup = cleanlookup.copy()
-        currentstring = c
-    codes.append((lookup[currentstring], bitwidth))
-    codes.append((END_OF_INFO_CODE, bitwidth))
-    log.debug("codes: %s", [x[0] for x in codes][:100])
+                lookup = {chr(i): {'value': i} for i in range(0x100)}
+                lookuplength = 0x102  # all chars + clearcode + endcode
+        # reset lookup (only do after potential lookup reset)
+        currentlookup = lookup[c]
 
-    # we all add it to one very long number
-    value = 0L
+    codes.append((currentlookup['value'], bitwidth))
+    codes.append((END_OF_INFO_CODE, bitwidth))
+
+    # we all add it to a very long number, but don't make the number
+    # too large, because it slows stuff down considerably
+    values = [0L]
+    width = 0
     for code, bitwidth in codes:
-        value = value << bitwidth | code
-    nrbits = sum([x[1] for x in codes])
-    # but the MSB nicely on a byte boundary
-    log.debug(nrbits)
-    if nrbits % 8 != 0:
-        value <<= 8 - (nrbits % 8)
-    log.debug("code = %x", value)
-    return binascii.a2b_hex("%x" % value)
+        values[-1] = values[-1] << bitwidth | code
+        width += bitwidth
+        if width % 8 == 0:
+            values[-1] = ("%%0%dx" % (width / 4)) % values[-1]
+            values.append(0L)
+            width = 0
+    if width == 0:
+        # we were just done, so the last value should be empty
+        values[-1] = ""
+    else:
+        # but the MSB nicely on a byte boundary
+        if width % 8 != 0:
+            shiftby = 8 - (width % 8)
+            values[-1] <<= shiftby
+            width += shiftby
+        values[-1] = ("%%0%dx" % (width / 4)) % values[-1]
+    compressed = binascii.a2b_hex("".join(values))
+    return compressed
 
 
 if __name__ == "__main__":
