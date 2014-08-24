@@ -47,7 +47,7 @@ def decompress(bytelist):
             lookup = lookup[:0x102]
             continue
         if code == END_OF_INFO_CODE:
-            assert (bitoffset + bitwidth) / 8 == len(bytelist) - 1, \
+            assert (bitoffset + bitwidth - 1) / 8 == len(bytelist) - 1, \
                 "End of info code, but not at the end of the string"
             break
         bitoffset += bitwidth

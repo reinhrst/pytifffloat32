@@ -91,7 +91,7 @@ def write_uint16(f, i):
 
 
 def read_tiff(filename):
-    with open(filename) as tifffile:
+    with open(filename, "rb") as tifffile:
         header = tifffile.read(4)
         assert header == TIFF_HEADER, "TIFF header not found"
         directorystart = read_uint32(tifffile)
