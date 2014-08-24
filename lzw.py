@@ -62,7 +62,8 @@ def decompress(bytelist):
             lookup.append(lastbytes + lookedup[0])
         lastbytes = lookedup
         outputbytes += lookedup
-        if len(lookup) == (1 << bitwidth) - 1 and bitwidth < MAX_BIT_WIDTH:
+        if len(lookup) == (1 << bitwidth) - 1:
+            assert(bitwidth < MAX_BIT_WIDTH)
             bitwidth += 1
             log.debug("Switching to bitwidth %d" % bitwidth)
         log.debug("Adding bytes: %s (%d)", map(hex, map(ord, lookedup)),

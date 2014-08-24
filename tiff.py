@@ -44,16 +44,17 @@ PREDICTOR_FLOAT = 3
 EXTRASAMPLES_ALPHA = 1
 PHOTOMETRIC_RGB = 2
 SAMPLEFORMAT_FLOAT = 3
+channels = [3, 4]
 FIELD = [
     #  name              id       transform    acceptable values
     ("width",           0x100, _single_param),
     ("height",          0x101, _single_param),
-    ("bitspersample",   0x102, _id,           [[32, 32, 32, 32]]),
+    ("bitspersample",   0x102, _id,           [x * [32] for x in channels]),
     ("compression",     0x103, _single_param, [COMPRESSION_LZW]),
     ("photometric",     0x106, _single_param, [PHOTOMETRIC_RGB]),
     ("stripoffsets",    0x111, _id),
     ("orientation",     0x112, _single_param, [1]),
-    ("samplesperpixel", 0x115, _single_param, [4]),
+    ("samplesperpixel", 0x115, _single_param, channels),
     ("rowsperstrip",    0x116, _single_param),
     ("stripbytecounts", 0x117, _id),
     ("planarconfig",    0x11C, _single_param, [1]),
@@ -63,9 +64,11 @@ FIELD = [
     # predictor: http://chriscox.org/TIFFTN3d1.pdf
     ("predictor",       0x13D, _single_param, [PREDICTOR_FLOAT]),
     ("extrasamples",    0x152, _single_param, [EXTRASAMPLES_ALPHA]),
-    ("sampleformat",    0x153, _id, [4 * [SAMPLEFORMAT_FLOAT]]),
+    ("sampleformat",    0x153, _id, [x * [SAMPLEFORMAT_FLOAT]
+                                     for x in channels]),
     ("xml",             0x2bc, _id),
 ]
+optionalfields = set(["extrasamples"])
 
 __FIELD_BY_ID_MAP = {values[1]: values for values in FIELD}
 
@@ -126,7 +129,9 @@ def read_tiff(filename):
                                  directory["rowsperstrip"]))
         assert len(directory["stripoffsets"]) == nrstrips
         assert len(directory["stripbytecounts"]) == nrstrips
-        assert len(FIELD) == len(directory), "Not all fields present"
+        notpresentfields = set([x[0] for x in FIELD]) - set(directory.keys())
+        for fieldname in notpresentfields:
+            assert fieldname in optionalfields, "Field %s missing" % fieldname
 
         imageasstring = ""
         # read the strips
