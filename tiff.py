@@ -205,7 +205,7 @@ def write_tiff(filename, data):
         "datetime": ("some time long ago", VT_ASCII),
         "predictor": (PREDICTOR_FLOAT, VT_SHORT),
         "extrasamples": (EXTRASAMPLES_ALPHA, VT_SHORT),
-        "sampleformat": (SAMPLEFORMAT_FLOAT, VT_SHORT),
+        "sampleformat": (nrchannels * [SAMPLEFORMAT_FLOAT], VT_SHORT),
         "xml": ("dontcare", VT_BYTE)
     }
     nrstrips = int(math.ceil(float(height) / ROWSPERSTRIP))
